@@ -214,7 +214,6 @@ def manage_resources(env, sortation_center, current_resource,
         yield env.timeout(30)
         # Start with 1 resource for the first 10 minutes
         sortation_center.current_resource['tm_pit_unload'] = simpy.Resource(env, capacity=night_tm_pit_unload)
-        sortation_center.current_resource['tm_pit_induct_stage'] = simpy.Resource(env, capacity=1)
         sortation_center.current_resource['tm_pit_induct'] = simpy.PriorityResource(env, capacity=night_tm_pit_induct)
         sortation_center.current_resource['tm_nonpit_split'] = simpy.Resource(env, capacity=night_tm_nonpit_split)
         sortation_center.current_resource['tm_nonpit_NC'] = simpy.PriorityResource(env, capacity=night_tm_nonpit_NC)
@@ -233,7 +232,6 @@ def manage_resources(env, sortation_center, current_resource,
         # Switch to 5 resources for the next 30 minutes
         sortation_center.current_resource['tm_pit_unload'] = simpy.Resource(env, capacity=day_tm_pit_unload)
         sortation_center.current_resource['tm_pit_induct'] = simpy.PriorityResource(env, capacity=day_tm_pit_induct)
-        sortation_center.current_resource['tm_pit_induct_stage'] = simpy.Resource(env, capacity=1)
         sortation_center.current_resource['tm_nonpit_split'] = simpy.Resource(env, capacity=day_tm_nonpit_split)
         sortation_center.current_resource['tm_nonpit_NC'] = simpy.PriorityResource(env, capacity=day_tm_nonpit_NC)
         sortation_center.current_resource['tm_nonpit_buffer'] = simpy.PriorityResource(env, capacity=day_tm_nonpit_buffer)
@@ -433,7 +431,6 @@ class Sortation_Center_Original:
         self.queues = {
             'queue_inbound_truck': simpy.Store(self.env),
             'queue_inbound_staging': simpy.Store(self.env),
-            'queue_inbound_staging_packages': simpy.Store(self.env),
             'queue_truck_TFC_packages': simpy.Store(self.env),
             'queue_induct_staging_pallets': simpy.Store(self.env, capacity = 6),
             'queue_induct_staging_packages': simpy.Store(self.env),
@@ -507,9 +504,6 @@ class Sortation_Center_Original:
     def truck_arrival(self, pallet):
         yield self.env.timeout(pallet.pkg_received_utc_ts) 
         pallet.current_queue = 'queue_inbound_truck'
-        #print(f'Pallet {pallet.pallet_id} arrived at {self.env.now}')
-        #for package in pallet.packages:
-            #package.received_ts = self.env.now
         yield self.queues['queue_inbound_truck'].put(pallet)
         self.env.process(self.unload_truck(pallet))
 
@@ -1880,11 +1874,6 @@ def setup_simulation(day_pallets,
     partition_2_pallets = math.ceil(partition_2_packages / G.TLMD_PARTITION_PALLET_MAX_PACKAGES)
     partition_3AB_pallets = math.ceil(partition_3AB_packages_actual / G.TLMD_PARTITION_PALLET_MAX_PACKAGES)
     partition_3C_pallets = math.ceil(partition_3C_packages_actual / G.TLMD_PARTITION_PALLET_MAX_PACKAGES)
-    #print(f'Partition 1 pallets: {partition_1_pallets}')
-    #print(f'Partition 2 pallets: {partition_2_pallets}')
-    #print(f'Partition 3AB pallets: {partition_3AB_pallets}')
-    #print(f'Partition 3C pallets: {partition_3C_pallets}')
-
 
     G.TOTAL_PALLETS_TLMD = partition_1_pallets + partition_2_pallets + partition_3AB_pallets + partition_3C_pallets
     G.TLMD_PARTITION_1_PALLETS = partition_1_pallets
@@ -1897,7 +1886,6 @@ def setup_simulation(day_pallets,
 
     current_resources = {'tm_pit_unload': simpy.Resource(env, capacity=night_tm_pit_unload), 
                         'tm_pit_induct': simpy.PriorityResource(env, capacity=night_tm_pit_induct), 
-                        'tm_pit_induct_stage': simpy.Resource(env, capacity=1),
                         'tm_nonpit_split': simpy.Resource(env, capacity=night_tm_nonpit_split), 
                         'tm_nonpit_NC': simpy.PriorityResource(env, capacity=night_tm_nonpit_NC), 
                         'tm_nonpit_buffer': simpy.PriorityResource(env, capacity=night_tm_nonpit_buffer),
