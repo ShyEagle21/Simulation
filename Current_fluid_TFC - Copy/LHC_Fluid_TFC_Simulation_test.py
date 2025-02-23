@@ -7,7 +7,7 @@
 
 import math
 import numpy as np
-import sim_generator_LHC_Norm_test as sg_c
+import sim_generator_LHC_Split_test as sg_c
 import matplotlib.pyplot as plt
 import pandas as pd
 import simpy
@@ -347,7 +347,8 @@ class Sortation_Center_Original:
                 current_resources,
                 var_status,
                 var_mag,
-                TFC_status
+                TFC_status,
+                LH_C_Status
                 ):
         
         self.env = env
@@ -385,6 +386,7 @@ class Sortation_Center_Original:
         self.TLMD_AB_pre_flag = False
         self.inbound_C_flag = False
         self.TLMD_C_flag = False
+        self.LHC_arrive_flag = False
 
 
         self.partition_1_flag = False
@@ -431,11 +433,13 @@ class Sortation_Center_Original:
         self.var_status = var_status
         self.var_mag = var_mag
         self.TFC_status = TFC_status
+        self.LH_C_Status = LH_C_Status
 
         self.queues = {
             'queue_inbound_truck': simpy.Store(self.env),
             'queue_inbound_staging': simpy.Store(self.env),
             'queue_inbound_staging_packages': simpy.Store(self.env),
+            'queue_inbound_staging_TLMD_C': simpy.Store(env),
             'queue_truck_TFC_packages': simpy.Store(self.env),
             'queue_induct_staging_pallets': simpy.Store(self.env, capacity = 6),
             'queue_induct_staging_packages': simpy.Store(self.env),
@@ -556,15 +560,52 @@ class Sortation_Center_Original:
                 if self.pause_event:
                     while self.pause_event:
                         yield self.env.timeout(1) # Wait for the pause event to be triggered
-                pallet.current_queue = 'queue_inbound_staging'
-                #print(f'Pallet {pallet.pallet_id} unloaded at {self.env.now}')
-                yield self.queues['queue_inbound_staging'].put(pallet)
-                for package in pallet.packages:
-                    package.received_ts = self.env.now
+                if self.LH_C_Status:
+                    if self.LHC_arrive_flag:
+                        if pallet.packages[0].scac == "TLMD":
+                            pallet.current_queue = 'queue_inbound_staging_TLMD_C'
+                            yield self.queues['queue_inbound_staging_TLMD_C'].put(pallet)
+                            for package in pallet.packages:
+                                package.received_ts = self.env.now
+                            self.env.process(self.feed_TLMD_induct_staging())
+                        else:
+                            pallet.current_queue = 'queue_inbound_staging'
+                            yield self.queues['queue_inbound_staging'].put(pallet)
+                            for package in pallet.packages:
+                                package.received_ts = self.env.now
+                            self.env.process(self.move_to_induct_staging(pallet))
+                    else:
+                        pallet.current_queue = 'queue_inbound_staging'
+                        yield self.queues['queue_inbound_staging'].put(pallet)
+                        for package in pallet.packages:
+                            package.received_ts = self.env.now
+                        self.env.process(self.move_to_induct_staging(pallet))
+                else:
+                    pallet.current_queue = 'queue_inbound_staging'
+                    yield self.queues['queue_inbound_staging'].put(pallet)
+                    for package in pallet.packages:
+                        package.received_ts = self.env.now
+                    self.env.process(self.move_to_induct_staging(pallet))
 
-                self.env.process(self.move_to_induct_staging(pallet))
-
-        
+    # def move_to_TLMD_staging(self, pallet):
+    #     if self.LH_C_Status:
+    #         while self.LHC_arrive_flag and not self.partition_3_flag:
+    #             yield self.env.timeout(1)  
+    #     else:
+    #         while self.LHC_arrive_flag and not self.partition_2_flag:
+    #             yield self.env.timeout(1)  
+    #     with self.current_resource['tm_TLMD_induct_stage'].request(priority=1) as req:
+    #         yield req
+    #         yield self.queues['queue_inbound_staging_TLMD_C'].get()
+    #         if self.var_status == True:
+    #             process_time = np.random.normal(G.TLMD_C_PARTITION_STAGE_RATE, G.TLMD_C_PARTITION_STAGE_RATE*self.var_mag)
+    #         elif self.var_status == False:
+    #             process_time = G.TLMD_C_PARTITION_STAGE_RATE
+    #         yield self.env.timeout(max(0.5,process_time))
+    #         pallet.current_queue = 'queue_tlmd_3_staged_pallet'
+    #         yield self.queues['queue_tlmd_3_staged_pallet'].put(pallet)
+    #         self.env.process(self.feed_TLMD_induct_staging())
+     
     def fluid_unload_to_packages(self, pallet):
         for package in pallet.packages:
             package.current_queue = 'queue_truck_TFC_packages'
@@ -580,7 +621,6 @@ class Sortation_Center_Original:
                 del self.queues['queue_inbound_truck'].items[i]
                 #print(f'Pallet {pallet.pallet_id} removed from queue_induct_staging_pallets at {self.env.now}')
                 break
-        
 
     def fluid_unload(self, package, pallet):
         while self.TFC_flag and not self.TLMD_AB_pre_flag:
@@ -604,8 +644,12 @@ class Sortation_Center_Original:
             self.env.process(self.TLMD_buffer_TFC_sort(package))
 
     def TFC_induct_staging(self, pallet):
-        while self.LHC_flag and not self.partition_2_flag:
-            yield self.env.timeout(1)
+        if self.LH_C_Status:
+            while self.LHC_arrive_flag and not self.partition_3_flag:
+                yield self.env.timeout(1)  
+        else:
+            while self.LHC_arrive_flag and not self.partition_2_flag:
+                yield self.env.timeout(1)  
 
         with self.current_resource['tm_TFC_unload'].request(priority=2) as req: 
             yield req
@@ -628,8 +672,12 @@ class Sortation_Center_Original:
                 self.env.process(self.TFC_induct_package(package, pallet))
 
     def TFC_induct_package(self, package, pallet):
-        while self.LHC_flag and not self.partition_2_flag:
-            yield self.env.timeout(1)
+        if self.LH_C_Status:
+            while self.LHC_arrive_flag and not self.partition_3_flag:
+                yield self.env.timeout(1)  
+        else:
+            while self.LHC_arrive_flag and not self.partition_2_flag:
+                yield self.env.timeout(1)  
 
         with self.current_resource['tm_TFC_unload'].request(priority=0) as req:  
             yield req
@@ -660,8 +708,12 @@ class Sortation_Center_Original:
                 break
 
     def move_to_induct_staging(self, pallet):
-        while self.LHC_flag and not self.partition_2_flag:
-            yield self.env.timeout(1)
+        if self.LH_C_Status:
+            while self.LHC_arrive_flag and not self.partition_3_flag:
+                yield self.env.timeout(1)  
+        else:
+            while self.LHC_arrive_flag and not self.partition_2_flag:
+                yield self.env.timeout(1)  
 
         with self.current_resource['tm_pit_induct'].request(priority=1) as req: 
             yield req
@@ -684,9 +736,12 @@ class Sortation_Center_Original:
                 self.env.process(self.induct_package(package, pallet))
 
     def induct_package(self, package, pallet): 
-
-        while self.LHC_flag and not self.partition_2_flag:
-            yield self.env.timeout(1)
+        if self.LH_C_Status:
+            while self.LHC_arrive_flag and not self.partition_3_flag:
+                yield self.env.timeout(1)  
+        else:
+            while self.LHC_arrive_flag and not self.partition_2_flag:
+                yield self.env.timeout(1)  
 
         with self.current_resource['tm_pit_induct'].request(priority=0) as req:  
             yield req
@@ -719,9 +774,12 @@ class Sortation_Center_Original:
                 break
 
     def split_package(self, package):
-        while self.LHC_flag and not self.partition_2_flag:
-            yield self.env.timeout(1)
-
+        if self.LH_C_Status:
+            while self.LHC_arrive_flag and not self.partition_3_flag:
+                yield self.env.timeout(1)  
+        else:
+            while self.LHC_arrive_flag and not self.partition_2_flag:
+                yield self.env.timeout(1)  
         with self.current_resource['tm_nonpit_split'].request() as req:
             yield req
             yield self.queues['queue_splitter'].get()
@@ -742,8 +800,12 @@ class Sortation_Center_Original:
                 self.env.process(self.tlmd_buffer_sort(package))
 
     def national_carrier_sort(self, package):
-        while self.LHC_flag and not self.partition_2_flag:
-            yield self.env.timeout(1)
+        if self.LH_C_Status:
+            while self.LHC_arrive_flag and not self.partition_3_flag:
+                yield self.env.timeout(1)  
+        else:
+            while self.LHC_arrive_flag and not self.partition_2_flag:
+                yield self.env.timeout(1)  
         with self.current_resource['tm_nonpit_NC'].request(priority=1) as req:
             yield req
             yield self.queues["queue_national_carrier_sort"].get()
@@ -801,8 +863,12 @@ class Sortation_Center_Original:
                     self.env.process(self.national_carrier_fluid_split_FDE(package))
         
     def check_all_UPSN_sorted(self):
-        while self.LHC_flag and not self.partition_2_flag:
-            yield self.env.timeout(1)
+        if self.LH_C_Status:
+            while self.LHC_arrive_flag and not self.partition_3_flag:
+                yield self.env.timeout(1)  
+        else:
+            while self.LHC_arrive_flag and not self.partition_2_flag:
+                yield self.env.timeout(1)  
         if len(self.queues['queue_UPSN_pallet'].items) == G.UPSN_LINEHAUL_A_PACKAGES + G.UPSN_LINEHAUL_B_PACKAGES:
             #print(f'All A&B UPSN packages sorted at {self.env.now}')
             G.UPSN_SORT_TIME = self.env.now 
@@ -816,8 +882,12 @@ class Sortation_Center_Original:
             self.env.process(self.check_all_UPSN_sorted())
 
     def check_all_USPS_sorted(self):
-        while self.LHC_flag and not self.partition_2_flag:
-            yield self.env.timeout(1)
+        if self.LH_C_Status:
+            while self.LHC_arrive_flag and not self.partition_3_flag:
+                yield self.env.timeout(1)  
+        else:
+            while self.LHC_arrive_flag and not self.partition_2_flag:
+                yield self.env.timeout(1)  
         if len(self.queues['queue_USPS_pallet'].items) == G.USPS_LINEHAUL_A_PACKAGES + G.USPS_LINEHAUL_B_PACKAGES:
             #print(f'All A&B USPS packages sorted at {self.env.now}')
             G.USPS_SORT_TIME = self.env.now
@@ -831,8 +901,12 @@ class Sortation_Center_Original:
             self.env.process(self.check_all_USPS_sorted())
 
     def check_all_FDEG_sorted(self):
-        while self.LHC_flag and not self.partition_2_flag:
-            yield self.env.timeout(1)
+        if self.LH_C_Status:
+            while self.LHC_arrive_flag and not self.partition_3_flag:
+                yield self.env.timeout(1)  
+        else:
+            while self.LHC_arrive_flag and not self.partition_2_flag:
+                yield self.env.timeout(1)  
         if  len(self.queues['queue_FDEG_pallet'].items) == G.FDEG_LINEHAUL_A_PACKAGES + G.FDEG_LINEHAUL_B_PACKAGES:
             #print(f'All A&B FDEG packages sorted at {self.env.now}')
             G.FDEG_SORT_TIME = self.env.now
@@ -846,8 +920,12 @@ class Sortation_Center_Original:
             self.env.process(self.check_all_FDEG_sorted())
 
     def check_all_FDE_sorted(self):
-        while self.LHC_flag and not self.partition_2_flag:
-            yield self.env.timeout(1)
+        if self.LH_C_Status:
+            while self.LHC_arrive_flag and not self.partition_3_flag:
+                yield self.env.timeout(1)  
+        else:
+            while self.LHC_arrive_flag and not self.partition_2_flag:
+                yield self.env.timeout(1)  
         if  len(self.queues['queue_FDE_pallet'].items) == G.FDE_LINEHAUL_A_PACKAGES + G.FDE_LINEHAUL_B_PACKAGES:
             #print(f'All A&B FDE packages sorted at {self.env.now}')
             G.FDE_SORT_TIME = self.env.now
@@ -1000,8 +1078,12 @@ class Sortation_Center_Original:
 ########################################################
 
     def national_carrier_fluid_split_UPSN(self, package):
-        while self.LHC_flag and not self.partition_2_flag:
-            yield self.env.timeout(1)
+        if self.LH_C_Status:
+            while self.LHC_arrive_flag and not self.partition_3_flag:
+                yield self.env.timeout(1)  
+        else:
+            while self.LHC_arrive_flag and not self.partition_2_flag:
+                yield self.env.timeout(1)  
         #while not self.resources_available:
         #    yield self.env.timeout(1)
         with self.self.current_resource['tm_nonpit_NC'].request(priority=1) as req:
@@ -1020,8 +1102,12 @@ class Sortation_Center_Original:
             self.env.process(self.national_carrier_fluid_load_UPSN(package))
 
     def national_carrier_fluid_load_UPSN(self, package):
-        while self.LHC_flag and not self.partition_2_flag:
-            yield self.env.timeout(1)
+        if self.LH_C_Status:
+            while self.LHC_arrive_flag and not self.partition_3_flag:
+                yield self.env.timeout(1)  
+        else:
+            while self.LHC_arrive_flag and not self.partition_2_flag:
+                yield self.env.timeout(1)  
         #while not self.resources_available:
         #    yield self.env.timeout(1)
         with  self.current_resource['tm_nonpit_NC'].request(priority=1) as req:
@@ -1040,8 +1126,12 @@ class Sortation_Center_Original:
 
 
     def national_carrier_fluid_split_USPS(self, package):
-        while self.LHC_flag and not self.partition_2_flag:
-            yield self.env.timeout(1)
+        if self.LH_C_Status:
+            while self.LHC_arrive_flag and not self.partition_3_flag:
+                yield self.env.timeout(1)  
+        else:
+            while self.LHC_arrive_flag and not self.partition_2_flag:
+                yield self.env.timeout(1)  
         #while not self.resources_available:
         #    yield self.env.timeout(1)
         with  self.current_resource['tm_nonpit_NC'].request(priority=1) as req:
@@ -1060,8 +1150,12 @@ class Sortation_Center_Original:
             self.env.process(self.national_carrier_fluid_load_USPS(package))
 
     def national_carrier_fluid_load_USPS(self, package):
-        while self.LHC_flag and not self.partition_2_flag:
-            yield self.env.timeout(1)
+        if self.LH_C_Status:
+            while self.LHC_arrive_flag and not self.partition_3_flag:
+                yield self.env.timeout(1)  
+        else:
+            while self.LHC_arrive_flag and not self.partition_2_flag:
+                yield self.env.timeout(1)  
         #while not self.resources_available:
         #    yield self.env.timeout(1)
         with  self.current_resource['tm_nonpit_NC'].request(priority=1) as req:
@@ -1081,8 +1175,12 @@ class Sortation_Center_Original:
 
 
     def national_carrier_fluid_split_FDEG(self, package):
-        while self.LHC_flag and not self.partition_2_flag:
-            yield self.env.timeout(1)
+        if self.LH_C_Status:
+            while self.LHC_arrive_flag and not self.partition_3_flag:
+                yield self.env.timeout(1)  
+        else:
+            while self.LHC_arrive_flag and not self.partition_2_flag:
+                yield self.env.timeout(1)  
         #while not self.resources_available:
         #    yield self.env.timeout(1)
         with self.current_resource['tm_nonpit_NC'].request(priority=1) as req:
@@ -1102,8 +1200,12 @@ class Sortation_Center_Original:
 
 
     def national_carrier_fluid_load_FDEG(self, package):
-        while self.LHC_flag and not self.partition_2_flag:
-            yield self.env.timeout(1)
+        if self.LH_C_Status:
+            while self.LHC_arrive_flag and not self.partition_3_flag:
+                yield self.env.timeout(1)  
+        else:
+            while self.LHC_arrive_flag and not self.partition_2_flag:
+                yield self.env.timeout(1)  
         #while not self.resources_available:
         #    yield self.env.timeout(1)
         with self.current_resource['tm_nonpit_NC'].request(priority=1) as req:
@@ -1122,8 +1224,12 @@ class Sortation_Center_Original:
 
 
     def national_carrier_fluid_split_FDE(self, package):
-        while self.LHC_flag and not self.partition_2_flag:
-            yield self.env.timeout(1)
+        if self.LH_C_Status:
+            while self.LHC_arrive_flag and not self.partition_3_flag:
+                yield self.env.timeout(1)  
+        else:
+            while self.LHC_arrive_flag and not self.partition_2_flag:
+                yield self.env.timeout(1)  
         #while not self.resources_available:
         #    yield self.env.timeout(1)
         with self.current_resource['tm_nonpit_NC'].request(priority=1) as req:
@@ -1143,8 +1249,12 @@ class Sortation_Center_Original:
 
 
     def national_carrier_fluid_load_FDE(self, package):
-        while self.LHC_flag and not self.partition_2_flag:
-            yield self.env.timeout(1)
+        if self.LH_C_Status:
+            while self.LHC_arrive_flag and not self.partition_3_flag:
+                yield self.env.timeout(1)  
+        else:
+            while self.LHC_arrive_flag and not self.partition_2_flag:
+                yield self.env.timeout(1)  
         #while not self.resources_available:
         #    yield self.env.timeout(1)
         with self.current_resource['tm_nonpit_NC'].request(priority=1) as req:
@@ -1250,8 +1360,12 @@ class Sortation_Center_Original:
     
     # this will need to be updated to include the logic associated with the different partitions
     def tlmd_buffer_sort(self, package):
-        while self.LHC_flag and not self.partition_2_flag:
-            yield self.env.timeout(1)
+        if self.LH_C_Status:
+            while self.LHC_arrive_flag and not self.partition_3_flag:
+                yield self.env.timeout(1)  
+        else:
+            while self.LHC_arrive_flag and not self.partition_2_flag:
+                yield self.env.timeout(1)  
         if self.pause_event:
             while self.pause_event:
                 yield self.env.timeout(1) # Wait for the pause event to be triggered
@@ -1328,8 +1442,12 @@ class Sortation_Center_Original:
 
 
     def check_pallet_1(self):
-        while self.LHC_flag and not self.partition_2_flag:
-            yield self.env.timeout(1)
+        if self.LH_C_Status:
+            while self.LHC_arrive_flag and not self.partition_3_flag:
+                yield self.env.timeout(1)  
+        else:
+            while self.LHC_arrive_flag and not self.partition_2_flag:
+                yield self.env.timeout(1)  
 
         if len(self.queues['queue_tlmd_partition_1_packages'].items) < G.TLMD_PARTITION_PALLET_MAX_PACKAGES:
             yield self.env.timeout(1)
@@ -1349,8 +1467,12 @@ class Sortation_Center_Original:
             self.env.process(self.stage_pallets())
 
     def check_pallet_1f(self):
-        while self.LHC_flag and not self.partition_1_flag:
-            yield self.env.timeout(1)
+        if self.LH_C_Status:
+            while self.LHC_arrive_flag and not self.partition_3_flag:
+                yield self.env.timeout(1)  
+        else:
+            while self.LHC_arrive_flag and not self.partition_2_flag:
+                yield self.env.timeout(1)  
         packages_for_this_pallet_1f = G.TLMD_PARTITION_1_PACKAGES - ((G.TLMD_PARTITION_1_PALLETS - 1) * G.TLMD_PARTITION_PALLET_MAX_PACKAGES)
         if len(self.queues['queue_tlmd_partition_1_packages_f'].items) < packages_for_this_pallet_1f:
             yield self.env.timeout(1)
@@ -1376,8 +1498,12 @@ class Sortation_Center_Original:
             self.env.process(self.stage_pallets())
 
     def check_pallet_2(self):
-        while self.LHC_flag and not self.partition_2_flag:
-            yield self.env.timeout(1)
+        if self.LH_C_Status:
+            while self.LHC_arrive_flag and not self.partition_3_flag:
+                yield self.env.timeout(1)  
+        else:
+            while self.LHC_arrive_flag and not self.partition_2_flag:
+                yield self.env.timeout(1)  
 
         if len(self.queues['queue_tlmd_partition_2_packages'].items) < G.TLMD_PARTITION_PALLET_MAX_PACKAGES:
             yield self.env.timeout(1)
@@ -1397,8 +1523,12 @@ class Sortation_Center_Original:
             self.env.process(self.stage_pallets())
 
     def check_pallet_2f(self):
-        while self.LHC_flag and not self.partition_2_flag:
-            yield self.env.timeout(1)
+        if self.LH_C_Status:
+            while self.LHC_arrive_flag and not self.partition_3_flag:
+                yield self.env.timeout(1)  
+        else:
+            while self.LHC_arrive_flag and not self.partition_2_flag:
+                yield self.env.timeout(1)  
         packages_for_this_pallet_2f = G.TLMD_PARTITION_2_PACKAGES - ((G.TLMD_PARTITION_2_PALLETS - 1) * G.TLMD_PARTITION_PALLET_MAX_PACKAGES)
         if len(self.queues['queue_tlmd_partition_2_packages_f'].items) < packages_for_this_pallet_2f:
             yield self.env.timeout(1)
@@ -1425,8 +1555,12 @@ class Sortation_Center_Original:
 
     ###########################################################
     def check_pallet_3AB(self):
-        while self.LHC_flag and not self.partition_2_flag:
-            yield self.env.timeout(1)
+        if self.LH_C_Status:
+            while self.LHC_arrive_flag and not self.partition_3_flag:
+                yield self.env.timeout(1)  
+        else:
+            while self.LHC_arrive_flag and not self.partition_2_flag:
+                yield self.env.timeout(1)  
 
         if len(self.queues['queue_tlmd_partition_3AB_packages'].items) < G.TLMD_PARTITION_PALLET_MAX_PACKAGES:
             yield self.env.timeout(1)
@@ -1446,8 +1580,12 @@ class Sortation_Center_Original:
             self.env.process(self.stage_pallets())
 
     def check_pallet_3ABf(self):
-        while self.LHC_flag and not self.partition_2_flag:
-            yield self.env.timeout(1)
+        if self.LH_C_Status:
+            while self.LHC_arrive_flag and not self.partition_3_flag:
+                yield self.env.timeout(1)  
+        else:
+            while self.LHC_arrive_flag and not self.partition_2_flag:
+                yield self.env.timeout(1)  
         packages_for_this_pallet_3ABf = G.TLMD_PARTITION_3AB_PACKAGES - ((G.TLMD_PARTITION_3AB_PALLETS - 1) * G.TLMD_PARTITION_PALLET_MAX_PACKAGES)
 
         if len(self.queues['queue_tlmd_partition_3AB_packages_f'].items) < packages_for_this_pallet_3ABf:
@@ -1475,8 +1613,12 @@ class Sortation_Center_Original:
 
 ###############################################################
     def check_pallet_3C(self):
-        while self.LHC_flag and not self.partition_2_flag:
-            yield self.env.timeout(1)
+        if self.LH_C_Status:
+            while self.LHC_arrive_flag and not self.partition_3_flag:
+                yield self.env.timeout(1)  
+        else:
+            while self.LHC_arrive_flag and not self.partition_2_flag:
+                yield self.env.timeout(1)  
 
         if len(self.queues['queue_tlmd_partition_3C_packages'].items) < G.TLMD_PARTITION_PALLET_MAX_PACKAGES:
             yield self.env.timeout(1)
@@ -1495,8 +1637,12 @@ class Sortation_Center_Original:
             self.env.process(self.stage_pallets())
 
     def check_pallet_3Cf(self):
-        while self.LHC_flag and not self.partition_2_flag:
-            yield self.env.timeout(1)
+        if self.LH_C_Status:
+            while self.LHC_arrive_flag and not self.partition_3_flag:
+                yield self.env.timeout(1)  
+        else:
+            while self.LHC_arrive_flag and not self.partition_2_flag:
+                yield self.env.timeout(1)  
         
         packages_for_this_pallet_3Cf = G.TLMD_PARTITION_3C_PACKAGES - ((G.TLMD_PARTITION_3C_PALLETS - 1) * G.TLMD_PARTITION_PALLET_MAX_PACKAGES)
 
@@ -1521,8 +1667,12 @@ class Sortation_Center_Original:
                 self.env.process(self.stage_pallets())
     
     def stage_pallets(self):
-        while self.LHC_flag and not self.partition_2_flag:
-            yield self.env.timeout(1)
+        if self.LH_C_Status:
+            while self.LHC_arrive_flag and not self.partition_3_flag:
+                yield self.env.timeout(1)  
+        else:
+            while self.LHC_arrive_flag and not self.partition_2_flag:
+                yield self.env.timeout(1)  
         if self.TLMD_counter_1 + self.TLMD_counter_2 + self.TLMD_counter_3AB >= G.TLMD_LINEHAUL_A_PACKAGES + G.TLMD_LINEHAUL_B_PACKAGES:
                 self.TLMD_AB_pre_flag = True
         if self.pause_event:
@@ -1578,8 +1728,12 @@ class Sortation_Center_Original:
             self.env.process(self.check_inbound_finished())
 
     def check_inbound_finished(self):
-        while self.LHC_flag and not self.partition_2_flag:
-            yield self.env.timeout(1)
+        if self.LH_C_Status:
+            while self.LHC_arrive_flag and not self.partition_3_flag:
+                yield self.env.timeout(1)  
+        else:
+            while self.LHC_arrive_flag and not self.partition_2_flag:
+                yield self.env.timeout(1)  
         while not self.partition_1_pallet_flag or not self.partition_2_pallet_flag or not self.partition_3AB_pallet_flag and not self.TLMD_AB_flag and not self.LHC_flag:
             yield self.env.timeout(1)
 
@@ -1627,8 +1781,14 @@ class Sortation_Center_Original:
 
 
     def feed_TLMD_induct_staging(self):
-        while self.LHC_flag and self.partition_2_flag:
-            yield self.env.timeout(1)
+
+        if self.LH_C_Status:
+            while self.LHC_flag and self.partition_3_flag:
+                yield self.env.timeout(1)
+        else:
+            while self.LHC_flag and self.partition_2_flag:
+                yield self.env.timeout(1)
+                
         while not self.TLMD_AB_flag:
             yield self.env.timeout(1)
         #print(f'TLMD A&B induction started at {self.env.now}')
@@ -1647,6 +1807,8 @@ class Sortation_Center_Original:
                 pallet = yield self.queues['queue_tlmd_2_staged_pallet'].get()
             elif len(self.queues['queue_tlmd_3_staged_pallet'].items) > 0:
                 pallet = yield self.queues['queue_tlmd_3_staged_pallet'].get()
+            elif len(self.queues['queue_inbound_staging_TLMD_C'].items) > 0:
+                pallet = yield self.queues['queue_inbound_staging_TLMD_C'].get()
             else:
                 print('ERROR: No pallets left in any queue')
                 return
@@ -1659,7 +1821,6 @@ class Sortation_Center_Original:
             
             pallet.current_queue = 'queue_tlmd_induct_staging_pallets'
             yield self.queues['queue_tlmd_induct_staging_pallets'].put(pallet)
-
             #self.process_tlmd_induct_Stage_count[0] -=1
             #print(f'Pallet {pallet.pallet_id} staged for TLMD induction at {self.env.now}')
             #print(f'Pallets remaining from partition 1: {len(self.queues["queue_tlmd_1_staged_pallet"].items)}')
@@ -1672,8 +1833,12 @@ class Sortation_Center_Original:
     
 
     def tlmd_induct_package(self, package, pallet):
-        while self.LHC_flag and self.partition_2_flag:
-            yield self.env.timeout(1)
+        if self.LH_C_Status:
+            while self.LHC_flag and self.partition_3_flag:
+                yield self.env.timeout(1)
+        else:
+            while self.LHC_flag and self.partition_2_flag:
+                yield self.env.timeout(1)
         if self.pause_event:
             while self.pause_event:
                 yield self.env.timeout(1) # Wait for the pause event to be triggered
@@ -1709,8 +1874,12 @@ class Sortation_Center_Original:
 
 
     def tlmd_lane_pickoff(self, package):
-        while self.LHC_flag and self.partition_2_flag:
-            yield self.env.timeout(1)
+        if self.LH_C_Status:
+            while self.LHC_flag and self.partition_3_flag:
+                yield self.env.timeout(1)
+        else:
+            while self.LHC_flag and self.partition_2_flag:
+                yield self.env.timeout(1)
         if self.pause_event:
             while self.pause_event:
                 yield self.env.timeout(1)
@@ -1731,8 +1900,12 @@ class Sortation_Center_Original:
             self.env.process(self.tlmd_final_sort(package))
     
     def tlmd_final_sort(self, package):
-        while self.LHC_flag and self.partition_2_flag:
-            yield self.env.timeout(1)
+        if self.LH_C_Status:
+            while self.LHC_flag and self.partition_3_flag:
+                yield self.env.timeout(1)
+        else:
+            while self.LHC_flag and self.partition_2_flag:
+                yield self.env.timeout(1)
         
         if self.pause_event:
             while self.pause_event:
@@ -1776,8 +1949,12 @@ class Sortation_Center_Original:
 
 
     def check_all_TLMD_sorted(self):
-        while self.LHC_flag and self.partition_2_flag:
-            yield self.env.timeout(1)
+        if self.LH_C_Status:
+            while self.LHC_flag and self.partition_3_flag:
+                yield self.env.timeout(1)
+        else:
+            while self.LHC_flag and self.partition_2_flag:
+                yield self.env.timeout(1)
 
         if self.pause_event:
             while self.pause_event:
@@ -1792,6 +1969,11 @@ class Sortation_Center_Original:
         
         else:
             G.PASSED_OVER_PACKAGES = G.TOTAL_PACKAGES_TLMD - len(self.queues['queue_tlmd_cart'].items)
+            if G.PASSED_OVER_PACKAGES == 0 and G.TLMD_PARTITION_3_SORT_TIME == None:
+                    G.TLMD_PARTITION_3_SORT_TIME = self.env.now
+
+        
+            yield self.env.timeout(1)
 
         yield self.env.timeout(1)
         #yield self.env.process(self.check_all_TLMD_sorted())
@@ -1834,7 +2016,8 @@ def setup_simulation(day_pallets,
                     FDE_Fluid_Status,
                     var_status,
                     process_variance,
-                    TFC_status
+                    TFC_status,
+                    LH_C_status
                     ):
         
 
@@ -1991,7 +2174,8 @@ def setup_simulation(day_pallets,
                                         current_resources,
                                         var_status,
                                         process_variance,
-                                        TFC_status
+                                        TFC_status,
+                                        LH_C_status
                                         )
 
     # Start tracking metrics and schedule arrivals
@@ -2092,7 +2276,7 @@ def Simulation_Machine(predict,
     pallet_info_2 = df_pallets_2.groupby('Pallet').agg(
         num_packages=('package_tracking_number', 'count'),
         earliest_arrival=('pkg_received_utc_ts', 'min'),
-        packages=('package_tracking_number', lambda x: list(zip(x, df_pallets.loc[x.index, 'scac'], df_pallets.loc[x.index, 'Partition']))),
+        packages=('package_tracking_number', lambda x: list(zip(x, df_pallets_2.loc[x.index, 'scac'], df_pallets_2.loc[x.index, 'Partition']))),
         linehaul=('Linehaul', 'first'),
     ).reset_index()
     pallet_info_2.to_csv('pallet_info_2.csv')
@@ -2130,6 +2314,7 @@ def Simulation_Machine(predict,
 
     var_status = False
     TFC_status = True
+    LH_C_status = False
     process_variance = 0
     # Setup inbound induct simulation
     env, sortation_center = setup_simulation(
@@ -2160,7 +2345,8 @@ def Simulation_Machine(predict,
                                              FDE_Fluid_Status,
                                              var_status,
                                              process_variance,
-                                             TFC_status
+                                             TFC_status,
+                                             LH_C_status
                                              )   
 
 
@@ -2304,7 +2490,7 @@ def Simulation_Machine(predict,
     gc.collect()
     
 
-    TFC_status = False
+    LH_C_status = True
     process_variance = 0
     # Setup inbound induct simulation
     env, sortation_center = setup_simulation(
@@ -2335,7 +2521,8 @@ def Simulation_Machine(predict,
                                              FDE_Fluid_Status,
                                              var_status,
                                              process_variance,
-                                             TFC_status
+                                             TFC_status,
+                                             LH_C_status
                                              )   
 
 
@@ -2347,7 +2534,7 @@ def Simulation_Machine(predict,
     #print(len(G.TLMD_STAGED_PACKAGES))
     #plot_metrics(sortation_center.metrics)
 
-    results_pallet = {
+    results_split = {
     # Total Packages
     "TOTAL_PACKAGES": G.TOTAL_PACKAGES,
     "TOTAL_PACKAGES_TLMD": G.TOTAL_PACKAGES_TLMD,
@@ -2481,9 +2668,10 @@ def Simulation_Machine(predict,
 
     ##########################################
     var_status = True
-    TFC_status = True
+    
 
     if var_05:
+        LH_C_status = False
         process_variance = 0.5
         # Setup inbound induct simulation
         env, sortation_center = setup_simulation(
@@ -2514,7 +2702,8 @@ def Simulation_Machine(predict,
                                                 FDE_Fluid_Status,
                                                 var_status,
                                                 process_variance,
-                                                TFC_status
+                                                TFC_status,
+                                             LH_C_status
                                                 )   
 
 
@@ -2658,7 +2847,7 @@ def Simulation_Machine(predict,
         del sortation_center    
         gc.collect()
     
-        TFC_status = False
+        LH_C_status = True
         process_variance = 0.5
         # Setup inbound induct simulation
         env, sortation_center = setup_simulation(
@@ -2689,7 +2878,8 @@ def Simulation_Machine(predict,
                                                 FDE_Fluid_Status,
                                                 var_status,
                                                 process_variance,
-                                                TFC_status
+                                                TFC_status,
+                                             LH_C_status
                                                 )   
 
 
@@ -2839,7 +3029,7 @@ def Simulation_Machine(predict,
 
     if var_10:
         process_variance = .1
-        TFC_status = True
+        LH_C_status = False
         env, sortation_center = setup_simulation(
                                                  pallet_info, 
                                                 night_tm_pit_unload, 
@@ -2868,7 +3058,8 @@ def Simulation_Machine(predict,
                                                 FDE_Fluid_Status,
                                                 var_status,
                                                 process_variance,
-                                                TFC_status
+                                                TFC_status,
+                                             LH_C_status
                                                 )   
         
         env.run(until=1410)
@@ -3005,7 +3196,7 @@ def Simulation_Machine(predict,
         del sortation_center    
         gc.collect()
 
-        TFC_status = False
+        LH_C_status = True
         process_variance = .1
         env, sortation_center = setup_simulation(
                                                  pallet_info_2, 
@@ -3035,7 +3226,8 @@ def Simulation_Machine(predict,
                                                 FDE_Fluid_Status,
                                                 var_status,
                                                 process_variance,
-                                                TFC_status
+                                                TFC_status,
+                                             LH_C_status
                                                 )   
         
         env.run(until=1410)
@@ -3208,7 +3400,8 @@ def Simulation_Machine(predict,
                                                 FDE_Fluid_Status,
                                                 var_status,
                                                 process_variance,
-                                                TFC_status
+                                                TFC_status,
+                                             LH_C_status
                                                 )   
 
 
@@ -3359,7 +3552,7 @@ def Simulation_Machine(predict,
     if var_20:
 
         process_variance = 0.2
-        TFC_status = True
+        LH_C_status = False
         env, sortation_center = setup_simulation(
                                                 pallet_info, 
                                                 night_tm_pit_unload, 
@@ -3388,7 +3581,8 @@ def Simulation_Machine(predict,
                                                 FDE_Fluid_Status,
                                                 var_status,
                                                 process_variance,
-                                                TFC_status
+                                                TFC_status,
+                                             LH_C_status
                                                 )   
         
         env.run(until=1410)
@@ -3526,7 +3720,7 @@ def Simulation_Machine(predict,
         gc.collect()
 
         process_variance = 0.2
-        TFC_status = False
+        LH_C_status = True
         env, sortation_center = setup_simulation(
                                                 pallet_info_2, 
                                                 night_tm_pit_unload, 
@@ -3555,7 +3749,8 @@ def Simulation_Machine(predict,
                                                 FDE_Fluid_Status,
                                                 var_status,
                                                 process_variance,
-                                                TFC_status
+                                                TFC_status,
+                                             LH_C_status
                                                 )   
         
         env.run(until=1410)
@@ -3725,7 +3920,8 @@ def Simulation_Machine(predict,
                                                 FDE_Fluid_Status,
                                                 var_status,
                                                 process_variance,
-                                                TFC_status
+                                                TFC_status,
+                                             LH_C_status
                                                 )   
         
         env.run(until=1410)
@@ -3868,7 +4064,7 @@ def Simulation_Machine(predict,
         results_var_25 = None
 
     if var_30:
-        TFC_status = True
+        LH_C_status = False
         process_variance = 0.3
         env, sortation_center = setup_simulation(
                                                 pallet_info, 
@@ -3898,7 +4094,8 @@ def Simulation_Machine(predict,
                                                 FDE_Fluid_Status,
                                                 var_status,
                                                 process_variance,
-                                                TFC_status
+                                                TFC_status,
+                                             LH_C_status
                                                 )   
         
         env.run(until=1410)
@@ -4035,7 +4232,7 @@ def Simulation_Machine(predict,
         del sortation_center    
         gc.collect()
 
-        TFC_status = False
+        LH_C_status = True
         process_variance = 0.3
         env, sortation_center = setup_simulation(
                                                 pallet_info_2, 
@@ -4065,7 +4262,8 @@ def Simulation_Machine(predict,
                                                 FDE_Fluid_Status,
                                                 var_status,
                                                 process_variance,
-                                                TFC_status
+                                                TFC_status,
+                                             LH_C_status
                                                 )   
         
         env.run(until=1410)
@@ -4237,7 +4435,8 @@ def Simulation_Machine(predict,
                                                 FDE_Fluid_Status,
                                                 var_status,
                                                 process_variance,
-                                                TFC_status
+                                                TFC_status,
+                                             LH_C_status
                                                 )   
         
         env.run(until=1410)
@@ -4378,7 +4577,7 @@ def Simulation_Machine(predict,
         results_var_35 = None
 
     if var_40:
-        TFC_status = True
+        LH_C_status = False
         process_variance = 0.4
         env, sortation_center = setup_simulation(
                                                 pallet_info, 
@@ -4408,7 +4607,8 @@ def Simulation_Machine(predict,
                                                 FDE_Fluid_Status,
                                                 var_status,
                                                 process_variance,
-                                                TFC_status
+                                                TFC_status,
+                                             LH_C_status
                                                 )   
         
         env.run(until=1410)
@@ -4544,7 +4744,9 @@ def Simulation_Machine(predict,
 
         del sortation_center    
         gc.collect()
-        TFC_status = False
+        
+        
+        LH_C_status = True
         process_variance = 0.4
         env, sortation_center = setup_simulation(
                                                 pallet_info_2, 
@@ -4574,7 +4776,8 @@ def Simulation_Machine(predict,
                                                 FDE_Fluid_Status,
                                                 var_status,
                                                 process_variance,
-                                                TFC_status
+                                                TFC_status,
+                                             LH_C_status
                                                 )   
         
         env.run(until=1410)
@@ -4716,7 +4919,7 @@ def Simulation_Machine(predict,
         results_pallet_var_40 = None
 
 
-    return results, results_pallet, final_packages, final_packages_2, results_var_05, results_pallet_var_05, results_var_10, results_pallet_var_10, results_var_15, results_var_20, results_pallet_var_20, results_var_25, results_var_30, results_pallet_var_30, results_var_35, results_var_40, results_pallet_var_40,  df_package_distribution, TFC_arrival_minutes
+    return results, results_split, final_packages, final_packages_2, results_var_05, results_pallet_var_05, results_var_10, results_pallet_var_10, results_var_15, results_var_20, results_pallet_var_20, results_var_25, results_var_30, results_pallet_var_30, results_var_35, results_var_40, results_pallet_var_40,  df_package_distribution, TFC_arrival_minutes
 
 
 
