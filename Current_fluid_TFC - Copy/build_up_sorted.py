@@ -71,7 +71,7 @@ def buildup_analysis(df_corrected, SC_ID, max_induct, max_buffer, max_sort, max_
 
         group['Sorted'] = group['pkg_sorted_utc_ts_cum']
 
-
+        """
         plt.plot(group['timestamp'], group['Sorted'], label = 'Sort', color = 'orange')
         plt.axhline(y=max_sort, color='orange', linestyle='--', label = 'Max Sort')
 
@@ -95,7 +95,15 @@ def buildup_analysis(df_corrected, SC_ID, max_induct, max_buffer, max_sort, max_
         plt.grid(True)
         plt.tight_layout()
         plt.show()
-  
+        """
+
+        df_plot = pd.DataFrame({
+            'timestamp': group['timestamp'],
+            'sorted': group['Sorted']
+        })
+
+        df_plot.to_csv(f'{day}_Sorted.csv', index=False)
+
         pkg_sorted_utc_ts_cum = group['Sorted'].iloc[-1]
         print(f'Total Sorted: {pkg_sorted_utc_ts_cum}')
         daily_dic[day] = pkg_sorted_utc_ts_cum

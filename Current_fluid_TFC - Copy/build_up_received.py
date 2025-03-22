@@ -68,7 +68,7 @@ def buildup_analysis(df_corrected):
 
         group['Received'] = group['pkg_received_utc_ts_cum']
 
-
+        """
         plt.plot(group['timestamp'], group['Received'], label = 'Received')
         #plt.axhline(y=max_induct, color='blue', linestyle='--', label = 'Max Induct')
 
@@ -91,10 +91,18 @@ def buildup_analysis(df_corrected):
         plt.grid(True)
         plt.tight_layout()
         plt.show()
+        """
 
-    
+        df_plot = pd.DataFrame({
+            'timestamp': group['timestamp'],
+            'received': group['Received']
+        })
+
+        df_plot.to_csv(f'{day}_received.csv', index=False)
+
         pkg_received_utc_ts_cum = group['Received'].iloc[-1]
         print(f'Total Received: {pkg_received_utc_ts_cum}')
+
         daily_dic[day] = pkg_received_utc_ts_cum
 
     return daily_dic

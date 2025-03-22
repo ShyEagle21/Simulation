@@ -73,8 +73,8 @@ def buildup_analysis(df_corrected, SC_ID, max_induct, max_buffer, max_sort, max_
     
         group['Inducted'] = group['pkg_inducted_utc_ts_cum']
 
-
-
+        
+        """
         plt.plot(group['timestamp'], group['Inducted'], label = 'Inducted', color = 'green')
         plt.axhline(y=max_buffer, color='green', linestyle='--', label = 'Max Buffer')
 
@@ -97,6 +97,13 @@ def buildup_analysis(df_corrected, SC_ID, max_induct, max_buffer, max_sort, max_
         plt.grid(True)
         plt.tight_layout()
         plt.show()
+        """
+        df_plot = pd.DataFrame({
+            'timestamp': group['timestamp'],
+            'inducted': group['Inducted']
+        })
+
+        df_plot.to_csv(f'{day}_inducted.csv', index=False)
 
         pkg_inducted_utc_ts_cum = group['Inducted'].iloc[-1]
         print(f'Total inducted: {pkg_inducted_utc_ts_cum}')
